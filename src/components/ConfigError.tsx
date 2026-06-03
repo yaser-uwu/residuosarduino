@@ -1,4 +1,5 @@
 import { AlertCircle, ExternalLink, KeyRound } from 'lucide-react'
+import { supabaseBuildInfo } from '../lib/supabase'
 
 interface ConfigErrorProps {
   error: string
@@ -65,6 +66,26 @@ export function ConfigError({ error }: ConfigErrorProps) {
           <p className="text-xs text-slate-500">
             No intercambies URL y clave. No pegues /rest/v1 en la URL.
           </p>
+
+          <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
+            <p className="font-semibold text-slate-800">Diagnóstico del build actual:</p>
+            <ul className="mt-2 space-y-1">
+              <li>
+                URL en build:{' '}
+                {supabaseBuildInfo.tieneUrl
+                  ? `sí → ${supabaseBuildInfo.host}`
+                  : 'no (falta Redeploy)'}
+              </li>
+              <li>
+                Clave en build:{' '}
+                {supabaseBuildInfo.tieneKey
+                  ? supabaseBuildInfo.keyOk
+                    ? 'sí, formato OK'
+                    : 'sí, pero formato raro'
+                  : 'no (falta Redeploy)'}
+              </li>
+            </ul>
+          </div>
         </div>
       )}
     </div>

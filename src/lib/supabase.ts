@@ -16,9 +16,26 @@ const keyCruda = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
 const supabaseUrl = urlCruda ? normalizarUrl(urlCruda) : undefined
 const supabaseAnonKey = keyCruda?.trim()
 
+/** Qué quedó grabado en el build (Vite no lee .env en runtime en producción). */
+export const supabaseBuildInfo = {
+  tieneUrl: Boolean(urlCruda?.trim()),
+  tieneKey: Boolean(supabaseAnonKey),
+  host: (() => {
+    try {
+      return supabaseUrl ? new URL(supabaseUrl).hostname : null
+    } catch {
+      return null
+    }
+  })(),
+  keyOk: Boolean(
+    supabaseAnonKey?.startsWith('sb_publishable_') ||
+      supabaseAnonKey?.startsWith('eyJ'),
+  ),
+}
+
 export const supabaseConfigError = (() => {
   if (!urlCruda?.trim() || !supabaseAnonKey) {
-    return 'Faltan VITE_SUPABASE_URL o VITE_SUPABASE_ANON_KEY. En Vercel: Settings → Environment Variables, luego Redeploy.'
+    return 'Las variables no entraron en el build de Vercel. Agregalas en Environment Variables y hacé Redeploy (con limpiar caché).'
   }
 
   if (
@@ -43,10 +60,14 @@ export const supabaseConfigError = (() => {
   try {
     const parsed = new URL(supabaseUrl!)
     if (!parsed.hostname.endsWith('supabase.co')) {
-      return 'VITE_SUPABASE_URL debe terminar en supabase.co (ej: https://fllgcqincjxqavpfmmbi.supabase.co).'
+      return `VITE_SUPABASE_URL incorrecta en el build: ${parsed.hostname}`
     }
   } catch {
     return 'VITE_SUPABASE_URL no es una URL válida.'
+  }
+
+  if (!supabaseBuildInfo.keyOk) {
+    return 'VITE_SUPABASE_ANON_KEY no parece una clave válida (debe empezar con sb_publishable_ o eyJ).'
   }
 
   return null
