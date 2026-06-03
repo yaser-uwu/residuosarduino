@@ -1,4 +1,4 @@
-import { AlertCircle, ExternalLink, KeyRound } from 'lucide-react'
+import { AlertCircle, KeyRound } from 'lucide-react'
 import { supabaseBuildInfo } from '../lib/supabase'
 
 interface ConfigErrorProps {
