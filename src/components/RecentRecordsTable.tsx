@@ -1,5 +1,6 @@
 import type { RegistroResiduo } from '../types'
 import { normalizarCategoria, CATEGORIA_CONFIG } from '../lib/categorias'
+import { formatKg } from '../lib/pesos'
 
 interface RecentRecordsTableProps {
   registros: RegistroResiduo[]
@@ -61,7 +62,7 @@ export function RecentRecordsTable({ registros }: RecentRecordsTableProps) {
                       </span>
                     </td>
                     <td className="py-3.5 pr-4 tabular-nums text-lg font-bold text-stone-900">
-                      {Number(registro.peso).toFixed(1)} kg
+                      {formatKg(Number(registro.peso))}
                     </td>
                     <td className="py-3.5 pr-4 font-medium text-stone-600">
                       {formatearFecha(registro.fecha_hora)}

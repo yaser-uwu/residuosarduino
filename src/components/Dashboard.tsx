@@ -6,28 +6,10 @@ import { ConfigError } from './ConfigError'
 import { RecentRecordsTable } from './RecentRecordsTable'
 import { StatsOverview } from './StatsOverview'
 import { useRegistrosResiduos } from '../hooks/useRegistrosResiduos'
-import { CATEGORIAS, normalizarCategoria } from '../lib/categorias'
+import { CATEGORIAS } from '../lib/categorias'
+import { pesoActualPorCategoria, totalPesoActual } from '../lib/pesos'
 import { supabaseConfigError } from '../lib/supabase'
 import type { CategoriaTacho } from '../types'
-
-function calcularPesosPorCategoria(
-  registros: { categoria: string; peso: number }[],
-): Record<CategoriaTacho, number> {
-  const pesos: Record<CategoriaTacho, number> = {
-    Vidrio: 0,
-    Plástico: 0,
-    Papel: 0,
-  }
-
-  for (const registro of registros) {
-    const categoria = normalizarCategoria(registro.categoria)
-    if (categoria) {
-      pesos[categoria] += Number(registro.peso) || 0
-    }
-  }
-
-  return pesos
-}
 
 export function Dashboard() {
   const configError = supabaseConfigError
@@ -36,12 +18,12 @@ export function Dashboard() {
   const errorMostrado = configError ?? error
 
   const pesosPorCategoria = useMemo(
-    () => calcularPesosPorCategoria(registros),
+    () => pesoActualPorCategoria(registros),
     [registros],
   )
 
   const totalKg = useMemo(
-    () => Object.values(pesosPorCategoria).reduce((sum, peso) => sum + peso, 0),
+    () => totalPesoActual(pesosPorCategoria),
     [pesosPorCategoria],
   )
 

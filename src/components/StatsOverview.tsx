@@ -1,4 +1,5 @@
 import { CATEGORIAS, CATEGORIA_CONFIG } from '../lib/categorias'
+import { formatKg } from '../lib/pesos'
 import type { CategoriaTacho } from '../types'
 
 interface StatsOverviewProps {
@@ -13,7 +14,7 @@ export function StatsOverview({
   porcentajesPorCategoria,
 }: StatsOverviewProps) {
   const tarjetas = [
-    { titulo: 'Kilos en total', valor: `${totalKg.toFixed(1)} kg` },
+    { titulo: 'Kilos en total', valor: formatKg(totalKg) },
     { titulo: 'Registros', valor: String(cantidadRegistros) },
     { titulo: 'Actualización', valor: 'En vivo' },
   ]

@@ -46,7 +46,10 @@ export function CategoryChart({ pesosPorCategoria }: CategoryChartProps) {
               unit=" kg"
             />
             <Tooltip
-              formatter={(value) => [`${value} kg`, 'Peso']}
+              formatter={(value) => [
+                `${Number(value).toFixed(2)} kg`,
+                'Peso',
+              ]}
               contentStyle={{
                 borderRadius: '10px',
                 border: '2px solid #d4cfc4',

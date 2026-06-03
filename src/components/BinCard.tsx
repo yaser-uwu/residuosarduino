@@ -1,6 +1,7 @@
 import { FileText, Package, Wine } from 'lucide-react'
 import type { CategoriaTacho } from '../types'
 import { CATEGORIA_CONFIG, MAX_PESO_TACHO } from '../lib/categorias'
+import { formatKg } from '../lib/pesos'
 
 const ICONOS = {
   Vidrio: Wine,
@@ -40,7 +41,7 @@ export function BinCard({ categoria, pesoActual }: BinCardProps) {
         </div>
 
         <p className="tabular-nums text-5xl font-extrabold tracking-tight text-stone-900 sm:text-6xl">
-          {pesoActual.toFixed(1)}
+          {formatKg(pesoActual, false)}
           <span className="ml-2 text-2xl font-bold text-stone-500">kg</span>
         </p>
 
