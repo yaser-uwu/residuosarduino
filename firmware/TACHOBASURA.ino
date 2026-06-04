@@ -2,7 +2,7 @@
 //
 // Comandos Serial (115200): cal cal1 cal2 cal3 | tara | raw | sync
 //
-// La web muestra lo último que el ESP envía a Supabase (kg, 2 decimales).
+// La web muestra lo último que el ESP envía a Supabase (kg, 3 decimales).
 
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -39,16 +39,17 @@ float scaleFactor3 = 276.29f;
 const float PESO_MAX_G = 10500.0f;
 const float UMBRAL_CAMBIO_G = 5.0f;           // 5 g (antes 30 g bloqueaba la web)
 const int MUESTRAS = 10;
-const unsigned long INTERVALO_ENVIO_MS = 800;
-const unsigned long INTERVALO_HEARTBEAT_MS = 2000;  // reenvío = mismo valor que LCD
-const unsigned long INTERVALO_LECTURA_MS = 500;
+const unsigned long INTERVALO_ENVIO_MS = 500;
+const unsigned long INTERVALO_HEARTBEAT_MS = 1000;  // 1 POST con los 3 tachos
+const unsigned long INTERVALO_LECTURA_MS = 400;
+const uint16_t HTTP_TIMEOUT_MS = 5000;
 const unsigned long INTERVALO_LCD_MS = 200;
 
 int peso_calibracion = 160;
 
 float pesoRef1 = 0, pesoRef2 = 0, pesoRef3 = 0;
 float pesoPantalla1 = 0, pesoPantalla2 = 0, pesoPantalla3 = 0;
-unsigned long ultimoEnvio1 = 0, ultimoEnvio2 = 0, ultimoEnvio3 = 0;
+unsigned long ultimoEnvioLote = 0;
 unsigned long ultimaLectura = 0;
 unsigned long ultimaActualizacionLCD = 0;
 
@@ -189,26 +190,38 @@ void conectarWiFi() {
   }
 }
 
-bool enviarASupabase(const char* categoria, float pesoGramos) {
+float gramosAKg(float pesoGramos) {
+  return roundf((pesoGramos / 1000.0f) * 1000.0f) / 1000.0f;
+}
+
+void agregarFilaSupabase(JsonArray& arr, const char* categoria, float pesoGramos) {
+  JsonObject row = arr.createNestedObject();
+  row["categoria"] = categoria;
+  row["peso"] = gramosAKg(pesoGramos);
+  row["usuario"] = "esp32";
+}
+
+bool enviarLoteASupabase(float p1, float p2, float p3, bool ok1, bool ok2, bool ok3) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[Supabase] sin Wi-Fi");
     return false;
   }
+  if (!ok1 && !ok2 && !ok3) return false;
 
-  float pesoKg = roundf((pesoGramos / 1000.0f) * 1000.0f) / 1000.0f;
+  StaticJsonDocument<768> doc;
+  JsonArray arr = doc.to<JsonArray>();
+  if (ok1) agregarFilaSupabase(arr, "vidrio", p1);
+  if (ok2) agregarFilaSupabase(arr, "plastico", p2);
+  if (ok3) agregarFilaSupabase(arr, "papel", p3);
+
+  String payload;
+  serializeJson(arr, payload);
 
   HTTPClient http;
   String url = String(supabaseUrl) + "/rest/v1/" + tableName;
 
-  StaticJsonDocument<256> doc;
-  doc["categoria"] = categoria;
-  doc["peso"] = pesoKg;
-  doc["usuario"] = "esp32";
-
-  String payload;
-  serializeJson(doc, payload);
-
   http.begin(url);
+  http.setTimeout(HTTP_TIMEOUT_MS);
   http.addHeader("apikey", supabaseKey);
   http.addHeader("Authorization", String("Bearer ") + supabaseKey);
   http.addHeader("Content-Type", "application/json");
@@ -219,7 +232,8 @@ bool enviarASupabase(const char* categoria, float pesoGramos) {
   http.end();
 
   if (code == 201 || code == 200) {
-    Serial.printf("[Supabase OK] %s %.0f g (%.3f kg)\n", categoria, pesoGramos, pesoKg);
+    Serial.printf("[Supabase OK] V:%.0f P:%.0f Pa:%.0f g\n",
+                  ok1 ? p1 : 0, ok2 ? p2 : 0, ok3 ? p3 : 0);
     return true;
   }
 
@@ -228,19 +242,25 @@ bool enviarASupabase(const char* categoria, float pesoGramos) {
   return false;
 }
 
-void procesarTacho(const char* categoria, float pesoGramos, float& pesoRef,
-                   unsigned long& ultimoEnvio) {
-  if (pesoGramos < 0) return;
+void procesarEnvio(float p1, float p2, float p3) {
+  bool ok1 = p1 >= 0;
+  bool ok2 = p2 >= 0;
+  bool ok3 = p3 >= 0;
 
-  bool cambio = fabs(pesoGramos - pesoRef) >= UMBRAL_CAMBIO_G;
-  bool heartbeat = (millis() - ultimoEnvio) >= INTERVALO_HEARTBEAT_MS;
+  bool cambio = false;
+  if (ok1 && fabs(p1 - pesoRef1) >= UMBRAL_CAMBIO_G) cambio = true;
+  if (ok2 && fabs(p2 - pesoRef2) >= UMBRAL_CAMBIO_G) cambio = true;
+  if (ok3 && fabs(p3 - pesoRef3) >= UMBRAL_CAMBIO_G) cambio = true;
 
+  bool heartbeat = (millis() - ultimoEnvioLote) >= INTERVALO_HEARTBEAT_MS;
   if (!cambio && !heartbeat) return;
-  if (millis() - ultimoEnvio < INTERVALO_ENVIO_MS) return;
+  if (millis() - ultimoEnvioLote < INTERVALO_ENVIO_MS) return;
 
-  if (enviarASupabase(categoria, pesoGramos)) {
-    pesoRef = pesoGramos;
-    ultimoEnvio = millis();
+  if (enviarLoteASupabase(p1, p2, p3, ok1, ok2, ok3)) {
+    ultimoEnvioLote = millis();
+    if (ok1) pesoRef1 = p1;
+    if (ok2) pesoRef2 = p2;
+    if (ok3) pesoRef3 = p3;
   }
 }
 
@@ -249,17 +269,15 @@ void syncTodosLosTachos() {
   float p2 = leerPesoGramos(scale2, scaleFactor2);
   float p3 = leerPesoGramos(scale3, scaleFactor3);
 
-  if (p1 >= 0) {
-    enviarASupabase("vidrio", p1);
-    pesoRef1 = p1;
-  }
-  if (p2 >= 0) {
-    enviarASupabase("plastico", p2);
-    pesoRef2 = p2;
-  }
-  if (p3 >= 0) {
-    enviarASupabase("papel", p3);
-    pesoRef3 = p3;
+  bool ok1 = p1 >= 0;
+  bool ok2 = p2 >= 0;
+  bool ok3 = p3 >= 0;
+
+  if (enviarLoteASupabase(p1, p2, p3, ok1, ok2, ok3)) {
+    ultimoEnvioLote = millis();
+    if (ok1) pesoRef1 = p1;
+    if (ok2) pesoRef2 = p2;
+    if (ok3) pesoRef3 = p3;
   }
 }
 
@@ -372,9 +390,7 @@ void loop() {
     if (p2 >= 0) pesoPantalla2 = p2;
     if (p3 >= 0) pesoPantalla3 = p3;
 
-    if (p1 >= 0) procesarTacho("vidrio", p1, pesoRef1, ultimoEnvio1);
-    if (p2 >= 0) procesarTacho("plastico", p2, pesoRef2, ultimoEnvio2);
-    if (p3 >= 0) procesarTacho("papel", p3, pesoRef3, ultimoEnvio3);
+    procesarEnvio(p1, p2, p3);
 
     Serial.printf("V:%.0f P:%.0f Pa:%.0f g\n", pesoPantalla1, pesoPantalla2, pesoPantalla3);
     ultimaLectura = millis();

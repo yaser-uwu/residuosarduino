@@ -3,7 +3,8 @@ import { supabase, supabaseConfigError } from '../lib/supabase'
 import type { RegistroResiduo } from '../types'
 
 /** Polling continuo: la feria se actualiza aunque Realtime falle en el celular. */
-const INTERVALO_POLL_MS = 1000
+const INTERVALO_POLL_MS = 400
+const LIMITE_REGISTROS = 40
 
 interface UseRegistrosResiduosResult {
   registros: RegistroResiduo[]
@@ -45,6 +46,7 @@ export function useRegistrosResiduos(): UseRegistrosResiduosResult {
         .from('registros_residuos')
         .select('*')
         .order('fecha_hora', { ascending: false })
+        .limit(LIMITE_REGISTROS)
 
       if (!activo) return
 
