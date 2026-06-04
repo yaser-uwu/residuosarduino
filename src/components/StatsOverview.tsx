@@ -35,7 +35,7 @@ export function StatsOverview({
             <p className="text-sm font-semibold uppercase tracking-wide text-stone-500">
               {titulo}
             </p>
-            <p className="mt-2 tabular-nums text-4xl font-extrabold text-stone-900">
+            <p className="mt-2 min-w-0 break-words tabular-nums text-[clamp(1.5rem,8vw,2.25rem)] font-extrabold text-stone-900">
               {valor}
             </p>
           </article>

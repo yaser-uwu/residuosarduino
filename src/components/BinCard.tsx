@@ -20,7 +20,7 @@ export function BinCard({ categoria, pesoActual }: BinCardProps) {
   const porcentaje = Math.min((pesoActual / MAX_PESO_TACHO) * 100, 100)
 
   return (
-    <article className="overflow-hidden rounded-2xl border-2 border-[#d4cfc4] bg-white shadow-[0_4px_0_#d4cfc4]">
+    <article className="min-w-0 overflow-hidden rounded-2xl border-2 border-[#d4cfc4] bg-white shadow-[0_4px_0_#d4cfc4]">
       <div className={`h-3 ${config.accent}`} />
 
       <div className="p-5 sm:p-6">
@@ -40,15 +40,17 @@ export function BinCard({ categoria, pesoActual }: BinCardProps) {
           </div>
         </div>
 
-        <p className="tabular-nums text-5xl font-extrabold tracking-tight text-stone-900 sm:text-6xl">
+        <p className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0 tabular-nums text-[clamp(2rem,12vw,3.75rem)] font-extrabold leading-none tracking-tight text-stone-900">
           {formatKg(pesoActual, false)}
-          <span className="ml-2 text-2xl font-bold text-stone-500">kg</span>
+          <span className="text-[clamp(1.125rem,5vw,1.5rem)] font-bold text-stone-500">
+            kg
+          </span>
         </p>
 
         <div className="mt-6">
           <div className="mb-2 flex justify-between text-sm font-semibold text-stone-600">
             <span>Llenado</span>
-            <span className={config.label}>{porcentaje.toFixed(0)}%</span>
+            <span className={config.label}>{porcentaje.toFixed(1)}%</span>
           </div>
           <div className="h-4 overflow-hidden rounded-full bg-stone-100">
             <div

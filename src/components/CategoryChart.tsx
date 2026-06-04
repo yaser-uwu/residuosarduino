@@ -23,13 +23,13 @@ export function CategoryChart({ pesosPorCategoria }: CategoryChartProps) {
   }))
 
   return (
-    <section className="rounded-2xl border-2 border-[#d4cfc4] bg-white p-5 shadow-[0_3px_0_#d4cfc4] sm:p-6">
+    <section className="min-w-0 max-w-full rounded-2xl border-2 border-[#d4cfc4] bg-white p-5 shadow-[0_3px_0_#d4cfc4] sm:p-6">
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-stone-900">Kilos por tacho</h2>
         <p className="mt-1 text-stone-600">Comparación entre categorías</p>
       </div>
 
-      <div className="h-72 w-full sm:h-80">
+      <div className="h-72 min-w-0 w-full max-w-full sm:h-80">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data} margin={{ top: 12, right: 8, left: 0, bottom: 4 }}>
             <CartesianGrid stroke="#e7e5e4" strokeDasharray="4 4" vertical={false} />
