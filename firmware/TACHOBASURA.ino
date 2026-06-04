@@ -6,6 +6,8 @@
 //   tara  = poner cero (tachos vacíos)
 //   raw   = ver si el HX711 responde (debe cambiar al tocar la celda)
 //   diag  = diagnóstico completo
+//   sync  = enviar a Supabase el peso actual de los 3 tachos
+//   clr   = borrar factores EEPROM (luego cal1 cal2 cal3)
 
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -13,8 +15,9 @@
 #include <ArduinoJson.h>
 #include <EEPROM.h>
 
-const char* ssid = "TU_WIFI_SSID";
-const char* password = "TU_WIFI_PASSWORD";
+// === CONFIGURACIÓN Wi-Fi ===
+const char* ssid = "XTRIM_GIRALDO_5G";           // Reemplaza con tu red Wi-Fi
+const char* password = "1206748236";   // Reemplaza con tu contraseña
 
 const char* supabaseUrl = "https://fllgcqincjxqavpfmmbi.supabase.co";
 const char* supabaseKey = "sb_publishable_CGbsdtCnVmNsLqq6d_tBbg_ksFSNIuF";
@@ -35,19 +38,21 @@ float scaleFactor2 = 420.0f;
 float scaleFactor3 = 420.0f;
 
 const float PESO_MAX = 10.5f;
-const float UMBRAL_CAMBIO = 0.03f;
+const float UMBRAL_CAMBIO = 0.005f;  // 5 g: más sensible para la web en vivo
 
 // Peso conocido para calibrar (cambialo según lo que tengas)
 // 160 g lata de atún → 160 gramos
 const int PESO_CAL_GRAMOS = 160;
 const float PESO_CAL_KG = PESO_CAL_GRAMOS / 1000.0f;  // 0.16 kg
 const int MUESTRAS = 7;
-const unsigned long INTERVALO_ENVIO = 1000;
+const unsigned long INTERVALO_ENVIO = 800;       // mínimo entre POST
+const unsigned long INTERVALO_HEARTBEAT = 2000; // reenvío aunque no cambie el peso
 const unsigned long INTERVALO_LECTURA = 500;
 
 float pesoRef1 = 0, pesoRef2 = 0, pesoRef3 = 0;
 unsigned long ultimoEnvio1 = 0, ultimoEnvio2 = 0, ultimoEnvio3 = 0;
 unsigned long ultimaLectura = 0;
+int fallosVidrio = 0;
 
 void guardarFactor(int addr, float factor) {
   EEPROM.put(addr, EEPROM_MAGIC);
@@ -214,16 +219,46 @@ bool enviarASupabase(const char* categoria, float pesoKg) {
 
 void procesarTacho(const char* cat, float pesoActual, float& pesoRef, unsigned long& ultimoEnvio) {
   if (pesoActual < 0) return;
-  if (fabs(pesoActual - pesoRef) < UMBRAL_CAMBIO) return;
+
+  bool cambio = fabs(pesoActual - pesoRef) >= UMBRAL_CAMBIO;
+  bool heartbeat = (millis() - ultimoEnvio) >= INTERVALO_HEARTBEAT;
+
+  if (!cambio && !heartbeat) return;
   if (millis() - ultimoEnvio < INTERVALO_ENVIO) return;
+
   if (enviarASupabase(cat, pesoActual)) {
     pesoRef = pesoActual;
     ultimoEnvio = millis();
   }
 }
 
+void borrarFactoresEeprom() {
+  guardarFactor(ADDR_F1, 0);
+  guardarFactor(ADDR_F2, 0);
+  guardarFactor(ADDR_F3, 0);
+  scaleFactor1 = scaleFactor2 = scaleFactor3 = 420.0f;
+  Serial.println("EEPROM borrada. Factores por defecto 420. Hacé cal1 cal2 cal3.");
+}
+
+void forzarSyncSupabase() {
+  float p1 = leerPeso(scale1, scaleFactor1, "Vidrio", true);
+  float p2 = leerPeso(scale2, scaleFactor2, "Plastico", true);
+  float p3 = leerPeso(scale3, scaleFactor3, "Papel", true);
+
+  if (p1 < 0) {
+    Serial.println("Vidrio: lectura INVALIDA (no se envia). Probá raw, cal1 o cables DT4/CLK5.");
+  } else {
+    enviarASupabase("vidrio", p1);
+    pesoRef1 = p1;
+  }
+  if (p2 < 0) Serial.println("Plastico: lectura invalida.");
+  else { enviarASupabase("plastico", p2); pesoRef2 = p2; }
+  if (p3 < 0) Serial.println("Papel: lectura invalida.");
+  else { enviarASupabase("papel", p3); pesoRef3 = p3; }
+}
+
 void mostrarMenu() {
-  Serial.println("\nComandos: cal | cal1 cal2 cal3 | tara | raw | diag");
+  Serial.println("\nComandos: cal | cal1 cal2 cal3 | tara | raw | diag | sync | clr");
 }
 
 void setup() {
@@ -273,6 +308,9 @@ void setup() {
   if (pesoRef2 < 0) pesoRef2 = 0;
   if (pesoRef3 < 0) pesoRef3 = 0;
 
+  Serial.println("\nEnviando pesos iniciales a Supabase...");
+  forzarSyncSupabase();
+
   Serial.println("\nListo.");
   mostrarMenu();
   ultimaLectura = millis();
@@ -316,6 +354,10 @@ void loop() {
       mostrarRaw();
     } else if (cmd == "diag") {
       diagnosticoCompleto();
+    } else if (cmd == "sync") {
+      forzarSyncSupabase();
+    } else if (cmd == "clr") {
+      borrarFactoresEeprom();
     } else {
       mostrarMenu();
     }
@@ -332,7 +374,15 @@ void loop() {
 
     Serial.printf("Vidrio: %.2f | Plastico: %.2f | Papel: %.2f kg\n", v1, v2, v3);
 
-    if (p1 >= 0) procesarTacho("vidrio", p1, pesoRef1, ultimoEnvio1);
+    if (p1 >= 0) {
+      fallosVidrio = 0;
+      procesarTacho("vidrio", p1, pesoRef1, ultimoEnvio1);
+    } else {
+      fallosVidrio++;
+      if (fallosVidrio == 1 || fallosVidrio % 20 == 0) {
+        Serial.println("  [!] Vidrio: lectura fallida (celda 1, pines 4/5, factor EEPROM o cables)");
+      }
+    }
     if (p2 >= 0) procesarTacho("plastico", p2, pesoRef2, ultimoEnvio2);
     if (p3 >= 0) procesarTacho("papel", p3, pesoRef3, ultimoEnvio3);
 

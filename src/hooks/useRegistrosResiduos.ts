@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { supabase, supabaseConfigError } from '../lib/supabase'
 import type { RegistroResiduo } from '../types'
 
-/** Solo si Realtime no conecta (respaldo rápido para la feria). */
-const INTERVALO_RESPALDO_MS = 1000
+/** Polling continuo: la feria se actualiza aunque Realtime falle en el celular. */
+const INTERVALO_POLL_MS = 1000
 
 interface UseRegistrosResiduosResult {
   registros: RegistroResiduo[]
@@ -35,7 +35,6 @@ export function useRegistrosResiduos(): UseRegistrosResiduosResult {
 
     let activo = true
     let realtimeConectado = false
-    let intervaloRespaldo: ReturnType<typeof setInterval> | undefined
 
     const aplicarRegistros = (data: RegistroResiduo[]) => {
       setRegistros(ordenarRegistros(data))
@@ -69,21 +68,11 @@ export function useRegistrosResiduos(): UseRegistrosResiduosResult {
       })
     }
 
-    const iniciarRespaldo = () => {
-      if (intervaloRespaldo) return
-      intervaloRespaldo = setInterval(() => {
-        cargarRegistros(true)
-      }, INTERVALO_RESPALDO_MS)
-    }
-
-    const detenerRespaldo = () => {
-      if (intervaloRespaldo) {
-        clearInterval(intervaloRespaldo)
-        intervaloRespaldo = undefined
-      }
-    }
-
     cargarRegistros()
+
+    const intervaloPoll = setInterval(() => {
+      cargarRegistros(true)
+    }, INTERVALO_POLL_MS)
 
     const channel = supabase
       .channel('registros_residuos_live', {
@@ -115,22 +104,19 @@ export function useRegistrosResiduos(): UseRegistrosResiduosResult {
           setConectado(true)
           setModoRealtime(true)
           setError(null)
-          detenerRespaldo()
         } else if (status === 'CHANNEL_ERROR') {
           setConectado(false)
           setModoRealtime(false)
-          iniciarRespaldo()
           console.error('Realtime error:', err)
         } else if (status === 'CLOSED') {
           setConectado(false)
           setModoRealtime(false)
-          iniciarRespaldo()
         }
       })
 
     const esperaRealtime = setTimeout(() => {
       if (activo && !realtimeConectado) {
-        iniciarRespaldo()
+        setConectado(true)
       }
     }, 2500)
 
@@ -144,7 +130,7 @@ export function useRegistrosResiduos(): UseRegistrosResiduosResult {
     return () => {
       activo = false
       clearTimeout(esperaRealtime)
-      detenerRespaldo()
+      clearInterval(intervaloPoll)
       document.removeEventListener('visibilitychange', onVisible)
       supabase.removeChannel(channel)
     }
