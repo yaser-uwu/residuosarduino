@@ -1,9 +1,9 @@
 import { normalizarCategoria } from './categorias'
 import type { CategoriaTacho, RegistroResiduo } from '../types'
 
-/** Misma precisión que el LCD del ESP32 (2 decimales). */
+/** Misma precisión que el LCD del ESP32 (3 decimales, ej. 144 g → 0.144 kg). */
 export function formatKg(kg: number, conUnidad = true): string {
-  const valor = kg.toFixed(2)
+  const valor = kg.toFixed(3)
   return conUnidad ? `${valor} kg` : valor
 }
 

@@ -18,7 +18,7 @@ interface CategoryChartProps {
 export function CategoryChart({ pesosPorCategoria }: CategoryChartProps) {
   const data = CATEGORIAS.map((categoria) => ({
     categoria,
-    peso: Number(pesosPorCategoria[categoria].toFixed(2)),
+    peso: Number(pesosPorCategoria[categoria].toFixed(3)),
     color: CATEGORIA_CONFIG[categoria].chartColor,
   }))
 
@@ -47,7 +47,7 @@ export function CategoryChart({ pesosPorCategoria }: CategoryChartProps) {
             />
             <Tooltip
               formatter={(value) => [
-                `${Number(value).toFixed(2)} kg`,
+                `${Number(value).toFixed(3)} kg`,
                 'Peso',
               ]}
               contentStyle={{

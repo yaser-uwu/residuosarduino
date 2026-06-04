@@ -1,200 +1,208 @@
-// ESP32 - 3x HX711 + Wi-Fi + Supabase + calibración por Serial
-// Copiá este archivo a tu sketch TACHOBASURA.ino en Arduino IDE
+// ESP32 - 3x HX711 + LCD I2C + Supabase (mismos gramos que el LCD en la web)
 //
-// Comandos Serial (115200 baud):
-//   cal   cal1  cal2  cal3  = calibrar con peso conocido (160 g por defecto)
-//   tara  = poner cero (tachos vacíos)
-//   raw   = ver si el HX711 responde (debe cambiar al tocar la celda)
-//   diag  = diagnóstico completo
-//   sync  = enviar a Supabase el peso actual de los 3 tachos
-//   clr   = borrar factores EEPROM (luego cal1 cal2 cal3)
+// Comandos Serial (115200): cal cal1 cal2 cal3 | tara | raw | sync
+//
+// La web muestra lo último que el ESP envía a Supabase (kg, 2 decimales).
 
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <HX711.h>
 #include <ArduinoJson.h>
 #include <EEPROM.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 
-// === CONFIGURACIÓN Wi-Fi ===
-const char* ssid = "XTRIM_GIRALDO_5G";           // Reemplaza con tu red Wi-Fi
-const char* password = "1206748236";   // Reemplaza con tu contraseña
+const char* ssid = "TU_WIFI_SSID";
+const char* password = "TU_WIFI_PASSWORD";
 
 const char* supabaseUrl = "https://fllgcqincjxqavpfmmbi.supabase.co";
 const char* supabaseKey = "sb_publishable_CGbsdtCnVmNsLqq6d_tBbg_ksFSNIuF";
 const char* tableName = "registros_residuos";
 
+LiquidCrystal_I2C* lcd = nullptr;
+
 HX711 scale1, scale2, scale3;
 const int DOUT_1 = 4, CLK_1 = 5;
 const int DOUT_2 = 16, CLK_2 = 17;
 const int DOUT_3 = 18, CLK_3 = 19;
+const int I2C_SDA = 21;
+const int I2C_SCL = 22;
 
-const int ADDR_F1 = 0;
-const int ADDR_F2 = 4;
-const int ADDR_F3 = 8;
-const uint32_t EEPROM_MAGIC = 0xC41101;
+const int ADDR_FACTOR_1 = 0;
+const int ADDR_FACTOR_2 = 8;
+const int ADDR_FACTOR_3 = 16;
 
-float scaleFactor1 = 420.0f;
-float scaleFactor2 = 420.0f;
-float scaleFactor3 = 420.0f;
+float scaleFactor1 = 276.29f;
+float scaleFactor2 = 276.29f;
+float scaleFactor3 = 276.29f;
 
-const float PESO_MAX = 10.5f;
-const float UMBRAL_CAMBIO = 0.005f;  // 5 g: más sensible para la web en vivo
+const float PESO_MAX_G = 10500.0f;
+const float UMBRAL_CAMBIO_G = 5.0f;           // 5 g (antes 30 g bloqueaba la web)
+const int MUESTRAS = 10;
+const unsigned long INTERVALO_ENVIO_MS = 800;
+const unsigned long INTERVALO_HEARTBEAT_MS = 2000;  // reenvío = mismo valor que LCD
+const unsigned long INTERVALO_LECTURA_MS = 500;
+const unsigned long INTERVALO_LCD_MS = 200;
 
-// Peso conocido para calibrar (cambialo según lo que tengas)
-// 160 g lata de atún → 160 gramos
-const int PESO_CAL_GRAMOS = 160;
-const float PESO_CAL_KG = PESO_CAL_GRAMOS / 1000.0f;  // 0.16 kg
-const int MUESTRAS = 7;
-const unsigned long INTERVALO_ENVIO = 800;       // mínimo entre POST
-const unsigned long INTERVALO_HEARTBEAT = 2000; // reenvío aunque no cambie el peso
-const unsigned long INTERVALO_LECTURA = 500;
+int peso_calibracion = 160;
 
 float pesoRef1 = 0, pesoRef2 = 0, pesoRef3 = 0;
+float pesoPantalla1 = 0, pesoPantalla2 = 0, pesoPantalla3 = 0;
 unsigned long ultimoEnvio1 = 0, ultimoEnvio2 = 0, ultimoEnvio3 = 0;
 unsigned long ultimaLectura = 0;
-int fallosVidrio = 0;
+unsigned long ultimaActualizacionLCD = 0;
 
-void guardarFactor(int addr, float factor) {
-  EEPROM.put(addr, EEPROM_MAGIC);
-  EEPROM.put(addr + 4, factor);
+bool lcdOK = false;
+
+bool iniciarLCD() {
+  Wire.begin(I2C_SDA, I2C_SCL);
+  delay(200);
+
+  Serial.println("Buscando LCD...");
+  const uint8_t direcciones[] = {0x27, 0x3F, 0x26, 0x20};
+
+  for (uint8_t addr : direcciones) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      Serial.printf("LCD en 0x%02X\n", addr);
+      lcd = new LiquidCrystal_I2C(addr, 20, 4);
+      lcd->init();
+      lcd->backlight();
+      lcd->print("Tachos listos");
+      delay(1500);
+      lcd->clear();
+      lcdOK = true;
+      return true;
+    }
+  }
+
+  Serial.println("LCD no encontrado (sigue sin pantalla)");
+  lcdOK = false;
+  return false;
+}
+
+void lcdLinea(int fila, const char* texto) {
+  if (!lcdOK || !lcd) return;
+  lcd->setCursor(0, fila);
+  lcd->print(texto);
+  int len = strlen(texto);
+  for (int i = len; i < 20; i++) lcd->print(' ');
+}
+
+void mostrarLCD() {
+  if (!lcdOK || !lcd) return;
+  if (millis() - ultimaActualizacionLCD < INTERVALO_LCD_MS) return;
+
+  float v = pesoPantalla1 / 1000.0f;
+  float p = pesoPantalla2 / 1000.0f;
+  float pa = pesoPantalla3 / 1000.0f;
+  float total = v + p + pa;
+
+  char linea[21];
+  snprintf(linea, sizeof(linea), "Vidrio  : %6.3f kg", v);
+  lcdLinea(0, linea);
+  snprintf(linea, sizeof(linea), "Plastico: %6.3f kg", p);
+  lcdLinea(1, linea);
+  snprintf(linea, sizeof(linea), "Papel   : %6.3f kg", pa);
+  lcdLinea(2, linea);
+  snprintf(linea, sizeof(linea), "Total   : %6.3f kg", total);
+  lcdLinea(3, linea);
+
+  ultimaActualizacionLCD = millis();
+}
+
+void calibrarCelda(HX711& scale, int numeroCelda, int addr) {
+  Serial.printf("\n========== CALIBRACION CELDA %d ==========\n", numeroCelda);
+  Serial.println("Retira el peso de la celda");
+  delay(2000);
+
+  scale.set_scale(1.0);
+  scale.tare(20);
+  delay(500);
+
+  Serial.printf("COLOCA %d GRAMOS EN LA CELDA\n", peso_calibracion);
+  Serial.println("Presiona ENTER\n");
+  while (!Serial.available()) delay(100);
+  Serial.readStringUntil('\n');
+  delay(1000);
+
+  long adc_lecture = scale.get_value(100);
+  float escala = (float)adc_lecture / (float)peso_calibracion;
+
+  Serial.printf("RAW: %ld, Factor: %.6f\n", adc_lecture, escala);
+
+  EEPROM.put(addr, escala);
   EEPROM.commit();
+
+  delay(2000);
 }
 
-float leerFactor(int addr, float defecto) {
-  uint32_t magic = 0;
-  float factor = defecto;
-  EEPROM.get(addr, magic);
-  EEPROM.get(addr + 4, factor);
-  if (magic != EEPROM_MAGIC || factor <= 0 || factor > 500000 || isnan(factor)) {
-    return defecto;
-  }
-  return factor;
-}
-
-bool celdaResponde(HX711& scale, const char* nombre) {
-  if (!scale.wait_ready_timeout(3000)) {
-    Serial.printf("  [ERROR] %s: sin respuesta (revisar DT/CLK/cables)\n", nombre);
-    return false;
-  }
-  long r = scale.read();
-  Serial.printf("  [OK] %s: lectura raw %ld\n", nombre, r);
-  return true;
-}
-
-float leerPeso(HX711& scale, float factor, const char* nombre, bool verbose) {
+float leerPesoGramos(HX711& scale, float factor) {
   scale.set_scale(factor);
 
   float suma = 0;
   int validas = 0;
 
   for (int i = 0; i < MUESTRAS; i++) {
-    if (scale.wait_ready_timeout(1000)) {
+    if (scale.wait_ready_timeout(500)) {
       float valor = scale.get_units(1);
-      if (valor >= -0.3f && valor <= PESO_MAX + 1.0f) {
-        suma += valor;
-        validas++;
-      }
+      suma += valor;
+      validas++;
     }
-    delay(25);
+    delay(10);
   }
 
-  if (validas < 2) {
-    if (verbose) {
-      Serial.printf("  [AVISO] %s: lectura fallida (factor=%.1f?)\n", nombre, factor);
-    }
-    return -1;
-  }
+  if (validas < 2) return -1;
 
   float promedio = suma / validas;
   if (promedio < 0) promedio = 0;
-  if (promedio > PESO_MAX) promedio = PESO_MAX;
+  if (promedio > PESO_MAX_G) promedio = PESO_MAX_G;
   return promedio;
 }
 
-void calibrarCelda(HX711& scale, int numero, int addrEeprom) {
-  Serial.printf("\n===== CALIBRACION CELDA %d =====\n", numero);
-  Serial.printf("Peso de referencia: %d g (%.2f kg)\n", PESO_CAL_GRAMOS, PESO_CAL_KG);
-  Serial.println("1) Sacá TODO el peso de esa celda");
-  Serial.println("2) Esperá 3 s...");
-  delay(3000);
-
-  scale.set_scale(1.0f);
-  scale.tare(25);
-  delay(800);
-
-  Serial.printf("3) Poné la lata (%d g) SOLO en esta celda\n", PESO_CAL_GRAMOS);
-  Serial.println("4) Escribí ENTER en el monitor...");
-  while (!Serial.available()) delay(50);
-  Serial.readStringUntil('\n');
-  delay(1500);
-
-  if (!scale.wait_ready_timeout(3000)) {
-    Serial.println("ERROR: celda no responde");
-    return;
-  }
-
-  long lectura = scale.get_value(30);
-  if (lectura <= 0) {
-    Serial.println("ERROR: lectura <= 0. Revisá montaje y cables.");
-    return;
-  }
-
-  float factor = (float)lectura / PESO_CAL_KG;
-  guardarFactor(addrEeprom, factor);
-  scale.set_scale(factor);
-
-  Serial.printf("Lectura con peso: %ld\n", lectura);
-  Serial.printf("Factor guardado: %.2f (kg)\n", factor);
-  Serial.printf("Prueba ahora: %.2f kg\n\n", scale.get_units(10));
-  delay(2000);
-}
-
-void diagnosticoCompleto() {
-  Serial.println("\n===== DIAGNOSTICO =====");
-  celdaResponde(scale1, "Vidrio");
-  celdaResponde(scale2, "Plastico");
-  celdaResponde(scale3, "Papel");
-  Serial.printf("Factores: %.2f | %.2f | %.2f\n", scaleFactor1, scaleFactor2, scaleFactor3);
-  Serial.printf("Colocá el peso de calibracion (%d g) y mirá si 'raw' cambia.\n\n", PESO_CAL_GRAMOS);
-}
-
-void mostrarRaw() {
-  Serial.println("\nRAW (10 lecturas, tocá la celda que quieras probar):\n");
-  scale1.set_scale(1.0f);
-  scale2.set_scale(1.0f);
-  scale3.set_scale(1.0f);
-  for (int i = 0; i < 10; i++) {
-    long r1 = scale1.is_ready() ? scale1.read() : -999999;
-    long r2 = scale2.is_ready() ? scale2.read() : -999999;
-    long r3 = scale3.is_ready() ? scale3.read() : -999999;
-    Serial.printf("C1:%7ld  C2:%7ld  C3:%7ld\n", r1, r2, r3);
-    delay(400);
-  }
-  Serial.println("Si siempre -999999 o no cambia al poner peso → cableado/pines.\n");
-}
-
 void conectarWiFi() {
+  if (WiFi.status() == WL_CONNECTED) return;
+
   Serial.printf("Wi-Fi: %s\n", ssid);
+  if (lcdOK) {
+    lcd->clear();
+    lcd->print("Wi-Fi...");
+  }
+
   WiFi.begin(ssid, password);
   for (int i = 0; i < 25 && WiFi.status() != WL_CONNECTED; i++) {
     delay(500);
     Serial.print(".");
   }
   Serial.println();
+
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("Wi-Fi OK - %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("Wi-Fi OK %s\n", WiFi.localIP().toString().c_str());
+    if (lcdOK) {
+      lcd->clear();
+      lcd->print("Wi-Fi OK");
+      delay(800);
+      lcd->clear();
+    }
+  } else {
+    Serial.println("Wi-Fi FALLO");
   }
 }
 
-bool enviarASupabase(const char* categoria, float pesoKg) {
-  if (WiFi.status() != WL_CONNECTED) return false;
+bool enviarASupabase(const char* categoria, float pesoGramos) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[Supabase] sin Wi-Fi");
+    return false;
+  }
+
+  float pesoKg = roundf((pesoGramos / 1000.0f) * 1000.0f) / 1000.0f;
 
   HTTPClient http;
   String url = String(supabaseUrl) + "/rest/v1/" + tableName;
 
   StaticJsonDocument<256> doc;
   doc["categoria"] = categoria;
-  doc["peso"] = roundf(pesoKg * 100) / 100.0f;
+  doc["peso"] = pesoKg;
   doc["usuario"] = "esp32";
 
   String payload;
@@ -207,111 +215,108 @@ bool enviarASupabase(const char* categoria, float pesoKg) {
   http.addHeader("Prefer", "return=minimal");
 
   int code = http.POST(payload);
+  String cuerpo = http.getString();
   http.end();
 
   if (code == 201 || code == 200) {
-    Serial.printf("[Supabase] %s %.2f kg\n", categoria, pesoKg);
+    Serial.printf("[Supabase OK] %s %.0f g (%.3f kg)\n", categoria, pesoGramos, pesoKg);
     return true;
   }
-  Serial.printf("[Supabase ERROR] %d\n", code);
+
+  Serial.printf("[Supabase ERROR] HTTP %d\n", code);
+  if (cuerpo.length() > 0) Serial.println(cuerpo);
   return false;
 }
 
-void procesarTacho(const char* cat, float pesoActual, float& pesoRef, unsigned long& ultimoEnvio) {
-  if (pesoActual < 0) return;
+void procesarTacho(const char* categoria, float pesoGramos, float& pesoRef,
+                   unsigned long& ultimoEnvio) {
+  if (pesoGramos < 0) return;
 
-  bool cambio = fabs(pesoActual - pesoRef) >= UMBRAL_CAMBIO;
-  bool heartbeat = (millis() - ultimoEnvio) >= INTERVALO_HEARTBEAT;
+  bool cambio = fabs(pesoGramos - pesoRef) >= UMBRAL_CAMBIO_G;
+  bool heartbeat = (millis() - ultimoEnvio) >= INTERVALO_HEARTBEAT_MS;
 
   if (!cambio && !heartbeat) return;
-  if (millis() - ultimoEnvio < INTERVALO_ENVIO) return;
+  if (millis() - ultimoEnvio < INTERVALO_ENVIO_MS) return;
 
-  if (enviarASupabase(cat, pesoActual)) {
-    pesoRef = pesoActual;
+  if (enviarASupabase(categoria, pesoGramos)) {
+    pesoRef = pesoGramos;
     ultimoEnvio = millis();
   }
 }
 
-void borrarFactoresEeprom() {
-  guardarFactor(ADDR_F1, 0);
-  guardarFactor(ADDR_F2, 0);
-  guardarFactor(ADDR_F3, 0);
-  scaleFactor1 = scaleFactor2 = scaleFactor3 = 420.0f;
-  Serial.println("EEPROM borrada. Factores por defecto 420. Hacé cal1 cal2 cal3.");
-}
+void syncTodosLosTachos() {
+  float p1 = leerPesoGramos(scale1, scaleFactor1);
+  float p2 = leerPesoGramos(scale2, scaleFactor2);
+  float p3 = leerPesoGramos(scale3, scaleFactor3);
 
-void forzarSyncSupabase() {
-  float p1 = leerPeso(scale1, scaleFactor1, "Vidrio", true);
-  float p2 = leerPeso(scale2, scaleFactor2, "Plastico", true);
-  float p3 = leerPeso(scale3, scaleFactor3, "Papel", true);
-
-  if (p1 < 0) {
-    Serial.println("Vidrio: lectura INVALIDA (no se envia). Probá raw, cal1 o cables DT4/CLK5.");
-  } else {
+  if (p1 >= 0) {
     enviarASupabase("vidrio", p1);
     pesoRef1 = p1;
   }
-  if (p2 < 0) Serial.println("Plastico: lectura invalida.");
-  else { enviarASupabase("plastico", p2); pesoRef2 = p2; }
-  if (p3 < 0) Serial.println("Papel: lectura invalida.");
-  else { enviarASupabase("papel", p3); pesoRef3 = p3; }
+  if (p2 >= 0) {
+    enviarASupabase("plastico", p2);
+    pesoRef2 = p2;
+  }
+  if (p3 >= 0) {
+    enviarASupabase("papel", p3);
+    pesoRef3 = p3;
+  }
 }
 
 void mostrarMenu() {
-  Serial.println("\nComandos: cal | cal1 cal2 cal3 | tara | raw | diag | sync | clr");
+  Serial.println("\n========== MENU ==========");
+  Serial.println("cal / cal1 / cal2 / cal3");
+  Serial.println("tara | raw | sync");
+  Serial.println("==========================\n");
 }
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  EEPROM.begin(64);
+  EEPROM.begin(512);
 
   Serial.println("\n========================================");
-  Serial.println("  TACHOS RECICLAJE - HX711");
+  Serial.println("  TACHOS RECICLAJE - LCD + Supabase");
   Serial.println("========================================\n");
+
+  lcdOK = iniciarLCD();
 
   scale1.begin(DOUT_1, CLK_1);
   scale2.begin(DOUT_2, CLK_2);
   scale3.begin(DOUT_3, CLK_3);
   delay(500);
 
-  scaleFactor1 = leerFactor(ADDR_F1, 420.0f);
-  scaleFactor2 = leerFactor(ADDR_F2, 420.0f);
-  scaleFactor3 = leerFactor(ADDR_F3, 420.0f);
-  Serial.printf("Factores EEPROM: %.2f | %.2f | %.2f\n", scaleFactor1, scaleFactor2, scaleFactor3);
+  EEPROM.get(ADDR_FACTOR_1, scaleFactor1);
+  EEPROM.get(ADDR_FACTOR_2, scaleFactor2);
+  EEPROM.get(ADDR_FACTOR_3, scaleFactor3);
 
-  Serial.println("Comprobando celdas...");
-  bool ok1 = celdaResponde(scale1, "Vidrio");
-  bool ok2 = celdaResponde(scale2, "Plastico");
-  bool ok3 = celdaResponde(scale3, "Papel");
+  if (isnan(scaleFactor1) || scaleFactor1 <= 0) scaleFactor1 = 276.29f;
+  if (isnan(scaleFactor2) || scaleFactor2 <= 0) scaleFactor2 = 276.29f;
+  if (isnan(scaleFactor3) || scaleFactor3 <= 0) scaleFactor3 = 276.29f;
 
-  if (!ok1 && !ok2 && !ok3) {
-    Serial.println("\nNINGUNA CELDA RESPONDE. Revisá:");
-    Serial.println("  - Pines DT/CLK");
-    Serial.println("  - Alimentacion 5V HX711");
-    Serial.println("  - Cables E+/E-/A+/A-");
-  }
+  Serial.printf("Factores: %.2f, %.2f, %.2f\n", scaleFactor1, scaleFactor2, scaleFactor3);
 
-  Serial.println("\nTarando (tachos VACIOS)...");
-  delay(2000);
-  if (ok1) { scale1.set_scale(scaleFactor1); scale1.tare(15); }
-  if (ok2) { scale2.set_scale(scaleFactor2); scale2.tare(15); }
-  if (ok3) { scale3.set_scale(scaleFactor3); scale3.tare(15); }
+  scale1.set_scale(scaleFactor1);
+  scale2.set_scale(scaleFactor2);
+  scale3.set_scale(scaleFactor3);
+
+  if (scale1.wait_ready_timeout(2000)) scale1.tare(10);
+  if (scale2.wait_ready_timeout(2000)) scale2.tare(10);
+  if (scale3.wait_ready_timeout(2000)) scale3.tare(10);
+
   delay(500);
-
   conectarWiFi();
 
-  pesoRef1 = leerPeso(scale1, scaleFactor1, "Vidrio", true);
-  pesoRef2 = leerPeso(scale2, scaleFactor2, "Plastico", true);
-  pesoRef3 = leerPeso(scale3, scaleFactor3, "Papel", true);
+  pesoPantalla1 = pesoRef1 = leerPesoGramos(scale1, scaleFactor1);
+  pesoPantalla2 = pesoRef2 = leerPesoGramos(scale2, scaleFactor2);
+  pesoPantalla3 = pesoRef3 = leerPesoGramos(scale3, scaleFactor3);
   if (pesoRef1 < 0) pesoRef1 = 0;
   if (pesoRef2 < 0) pesoRef2 = 0;
   if (pesoRef3 < 0) pesoRef3 = 0;
 
-  Serial.println("\nEnviando pesos iniciales a Supabase...");
-  forzarSyncSupabase();
+  Serial.println("Sync inicial Supabase...");
+  syncTodosLosTachos();
 
-  Serial.println("\nListo.");
   mostrarMenu();
   ultimaLectura = millis();
 }
@@ -325,69 +330,56 @@ void loop() {
     cmd.toLowerCase();
 
     if (cmd == "cal") {
-      calibrarCelda(scale1, 1, ADDR_F1);
-      calibrarCelda(scale2, 2, ADDR_F2);
-      calibrarCelda(scale3, 3, ADDR_F3);
-      scaleFactor1 = leerFactor(ADDR_F1, scaleFactor1);
-      scaleFactor2 = leerFactor(ADDR_F2, scaleFactor2);
-      scaleFactor3 = leerFactor(ADDR_F3, scaleFactor3);
+      calibrarCelda(scale1, 1, ADDR_FACTOR_1);
+      calibrarCelda(scale2, 2, ADDR_FACTOR_2);
+      calibrarCelda(scale3, 3, ADDR_FACTOR_3);
+      EEPROM.get(ADDR_FACTOR_1, scaleFactor1);
+      EEPROM.get(ADDR_FACTOR_2, scaleFactor2);
+      EEPROM.get(ADDR_FACTOR_3, scaleFactor3);
     } else if (cmd == "cal1") {
-      calibrarCelda(scale1, 1, ADDR_F1);
-      scaleFactor1 = leerFactor(ADDR_F1, scaleFactor1);
+      calibrarCelda(scale1, 1, ADDR_FACTOR_1);
+      EEPROM.get(ADDR_FACTOR_1, scaleFactor1);
     } else if (cmd == "cal2") {
-      calibrarCelda(scale2, 2, ADDR_F2);
-      scaleFactor2 = leerFactor(ADDR_F2, scaleFactor2);
+      calibrarCelda(scale2, 2, ADDR_FACTOR_2);
+      EEPROM.get(ADDR_FACTOR_2, scaleFactor2);
     } else if (cmd == "cal3") {
-      calibrarCelda(scale3, 3, ADDR_F3);
-      scaleFactor3 = leerFactor(ADDR_F3, scaleFactor3);
+      calibrarCelda(scale3, 3, ADDR_FACTOR_3);
+      EEPROM.get(ADDR_FACTOR_3, scaleFactor3);
     } else if (cmd == "tara") {
-      Serial.println("Tarando...");
-      scale1.set_scale(scaleFactor1);
-      scale2.set_scale(scaleFactor2);
-      scale3.set_scale(scaleFactor3);
-      scale1.tare(15);
-      scale2.tare(15);
-      scale3.tare(15);
+      scale1.tare(10);
+      scale2.tare(10);
+      scale3.tare(10);
       pesoRef1 = pesoRef2 = pesoRef3 = 0;
-      Serial.println("OK");
+      syncTodosLosTachos();
     } else if (cmd == "raw") {
-      mostrarRaw();
-    } else if (cmd == "diag") {
-      diagnosticoCompleto();
+      for (int i = 0; i < 10; i++) {
+        Serial.printf("C1:%ld C2:%ld C3:%ld\n", scale1.read(), scale2.read(), scale3.read());
+        delay(300);
+      }
     } else if (cmd == "sync") {
-      forzarSyncSupabase();
-    } else if (cmd == "clr") {
-      borrarFactoresEeprom();
+      syncTodosLosTachos();
     } else {
       mostrarMenu();
     }
   }
 
-  if (millis() - ultimaLectura >= INTERVALO_LECTURA) {
-    float p1 = leerPeso(scale1, scaleFactor1, "Vidrio", false);
-    float p2 = leerPeso(scale2, scaleFactor2, "Plastico", false);
-    float p3 = leerPeso(scale3, scaleFactor3, "Papel", false);
+  if (millis() - ultimaLectura >= INTERVALO_LECTURA_MS) {
+    float p1 = leerPesoGramos(scale1, scaleFactor1);
+    float p2 = leerPesoGramos(scale2, scaleFactor2);
+    float p3 = leerPesoGramos(scale3, scaleFactor3);
 
-    float v1 = p1 >= 0 ? p1 : pesoRef1;
-    float v2 = p2 >= 0 ? p2 : pesoRef2;
-    float v3 = p3 >= 0 ? p3 : pesoRef3;
+    if (p1 >= 0) pesoPantalla1 = p1;
+    if (p2 >= 0) pesoPantalla2 = p2;
+    if (p3 >= 0) pesoPantalla3 = p3;
 
-    Serial.printf("Vidrio: %.2f | Plastico: %.2f | Papel: %.2f kg\n", v1, v2, v3);
-
-    if (p1 >= 0) {
-      fallosVidrio = 0;
-      procesarTacho("vidrio", p1, pesoRef1, ultimoEnvio1);
-    } else {
-      fallosVidrio++;
-      if (fallosVidrio == 1 || fallosVidrio % 20 == 0) {
-        Serial.println("  [!] Vidrio: lectura fallida (celda 1, pines 4/5, factor EEPROM o cables)");
-      }
-    }
+    if (p1 >= 0) procesarTacho("vidrio", p1, pesoRef1, ultimoEnvio1);
     if (p2 >= 0) procesarTacho("plastico", p2, pesoRef2, ultimoEnvio2);
     if (p3 >= 0) procesarTacho("papel", p3, pesoRef3, ultimoEnvio3);
 
+    Serial.printf("V:%.0f P:%.0f Pa:%.0f g\n", pesoPantalla1, pesoPantalla2, pesoPantalla3);
     ultimaLectura = millis();
   }
 
+  mostrarLCD();
   delay(50);
 }

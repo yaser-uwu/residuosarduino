@@ -119,16 +119,16 @@ void mostrarLCD(float v, float p, float pa) {
   if (total < 0) total = 0;
 
   char linea[21];
-  snprintf(linea, sizeof(linea), "Vidrio  : %5.2f kg", v);
+  snprintf(linea, sizeof(linea), "Vidrio  : %6.3f kg", v);
   lcdLinea(0, linea);
 
-  snprintf(linea, sizeof(linea), "Plastico: %5.2f kg", p);
+  snprintf(linea, sizeof(linea), "Plastico: %6.3f kg", p);
   lcdLinea(1, linea);
 
-  snprintf(linea, sizeof(linea), "Papel   : %5.2f kg", pa);
+  snprintf(linea, sizeof(linea), "Papel   : %6.3f kg", pa);
   lcdLinea(2, linea);
 
-  snprintf(linea, sizeof(linea), "Total   : %5.2f kg", total);
+  snprintf(linea, sizeof(linea), "Total   : %6.3f kg", total);
   lcdLinea(3, linea);
 }
 
@@ -190,7 +190,7 @@ bool enviarASupabase(const char* categoria, float pesoActualKg) {
 
   StaticJsonDocument<256> doc;
   doc["categoria"] = categoria;
-  doc["peso"] = roundf(pesoActualKg * 100) / 100.0f;
+  doc["peso"] = roundf(pesoActualKg * 1000) / 1000.0f;
   doc["usuario"] = "esp32";
 
   String payload;
@@ -206,7 +206,7 @@ bool enviarASupabase(const char* categoria, float pesoActualKg) {
   http.end();
 
   if (code == 201 || code == 200) {
-    Serial.printf("OK %s %.2f kg (actual)\n", categoria, pesoActualKg);
+    Serial.printf("OK %s %.3f kg (actual)\n", categoria, pesoActualKg);
     return true;
   }
   Serial.printf("Error HTTP %d: %s\n", code, http.getString().c_str());
