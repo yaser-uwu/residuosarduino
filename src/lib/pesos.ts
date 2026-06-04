@@ -1,4 +1,5 @@
 import { normalizarCategoria } from './categorias'
+import { esp32Activo } from './esp32'
 import type { CategoriaTacho, RegistroResiduo } from '../types'
 
 /** Misma precisión que el LCD del ESP32 (2 decimales). */
@@ -7,14 +8,23 @@ export function formatKg(kg: number, conUnidad = true): string {
   return conUnidad ? `${valor} kg` : valor
 }
 
+const CERO_POR_CATEGORIA: Record<CategoriaTacho, number> = {
+  Vidrio: 0,
+  Plástico: 0,
+  Papel: 0,
+}
+
 /** Último peso reportado por el ESP32 por categoría (mismo valor que muestra el LCD). */
 export function pesoActualPorCategoria(
   registros: RegistroResiduo[],
+  ahora = Date.now(),
 ): Record<CategoriaTacho, number> {
+  if (!esp32Activo(registros, ahora)) {
+    return { ...CERO_POR_CATEGORIA }
+  }
+
   const pesos: Record<CategoriaTacho, number> = {
-    Vidrio: 0,
-    Plástico: 0,
-    Papel: 0,
+    ...CERO_POR_CATEGORIA,
   }
   const yaVisto = new Set<CategoriaTacho>()
 
