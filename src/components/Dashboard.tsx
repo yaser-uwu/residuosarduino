@@ -5,7 +5,6 @@ import { CategoryChart } from './CategoryChart'
 import { ConfigError } from './ConfigError'
 import { RecentRecordsTable } from './RecentRecordsTable'
 import { StatsOverview } from './StatsOverview'
-import { useEsp32Activo } from '../hooks/useEsp32Activo'
 import { useRegistrosResiduos } from '../hooks/useRegistrosResiduos'
 import { CATEGORIAS } from '../lib/categorias'
 import { pesoActualPorCategoria, totalPesoActual } from '../lib/pesos'
@@ -16,12 +15,11 @@ export function Dashboard() {
   const configError = supabaseConfigError
   const { registros, loading, error, conectado, modoRealtime } =
     useRegistrosResiduos()
-  const esp32EnLinea = useEsp32Activo(registros)
   const errorMostrado = configError ?? error
 
   const pesosPorCategoria = useMemo(
     () => pesoActualPorCategoria(registros),
-    [registros, esp32EnLinea],
+    [registros],
   )
 
   const totalKg = useMemo(
@@ -65,23 +63,21 @@ export function Dashboard() {
 
           <div
             className={`inline-flex w-fit items-center gap-2 rounded-full px-4 py-2 text-sm font-bold ${
-              esp32EnLinea
+              conectado
                 ? 'bg-white text-[#1a5c38]'
                 : 'bg-amber-400 text-amber-950'
             }`}
           >
             <span
               className={`h-2.5 w-2.5 rounded-full ${
-                esp32EnLinea ? 'bg-emerald-500' : 'bg-amber-800'
+                conectado ? 'bg-emerald-500' : 'bg-amber-800'
               }`}
             />
-            {esp32EnLinea
-              ? modoRealtime
-                ? 'En vivo'
-                : conectado
-                  ? 'Sincronizando'
-                  : 'Actualizando cada 1 s'
-              : 'Stand apagado · 0 kg'}
+            {modoRealtime
+              ? 'En vivo'
+              : conectado
+                ? 'Sincronizando'
+                : 'Actualizando cada 1 s'}
           </div>
         </div>
       </header>
@@ -102,9 +98,7 @@ export function Dashboard() {
               <div className="mb-5">
                 <h2 className="text-2xl font-bold text-stone-900">Los tres tachos</h2>
                 <p className="mt-1 text-stone-600">
-                  {esp32EnLinea
-                    ? 'Verde vidrio · azul plástico · amarillo papel'
-                    : 'Sin datos del ESP32 (apagado o sin Wi‑Fi) — mostrando 0 kg'}
+                  Verde vidrio · azul plástico · amarillo papel
                 </p>
               </div>
               <div className="grid min-w-0 gap-5 md:grid-cols-2 lg:grid-cols-3">
