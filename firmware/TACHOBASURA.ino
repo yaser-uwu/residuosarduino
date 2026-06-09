@@ -12,6 +12,7 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
+
 const char* ssid = "TU_WIFI_SSID";
 const char* password = "TU_WIFI_PASSWORD";
 
@@ -37,13 +38,13 @@ float scaleFactor2 = 276.29f;
 float scaleFactor3 = 276.29f;
 
 const float PESO_MAX_G = 10500.0f;
-const float UMBRAL_CAMBIO_G = 5.0f;           // 5 g (antes 30 g bloqueaba la web)
-const int MUESTRAS = 10;
-const unsigned long INTERVALO_ENVIO_MS = 500;
-const unsigned long INTERVALO_HEARTBEAT_MS = 1000;  // 1 POST con los 3 tachos
-const unsigned long INTERVALO_LECTURA_MS = 400;
-const uint16_t HTTP_TIMEOUT_MS = 5000;
-const unsigned long INTERVALO_LCD_MS = 200;
+const float UMBRAL_CAMBIO_G = 2.0f;            // 2 g → reacción rápida
+const int MUESTRAS_RAPIDAS = 2;                // loop: pocas muestras = LCD ágil
+const unsigned long INTERVALO_HEARTBEAT_MS = 3000;
+const unsigned long INTERVALO_LECTURA_MS = 80;
+const uint16_t HTTP_TIMEOUT_MS = 4000;
+const unsigned long INTERVALO_LCD_MS = 50;
+const unsigned long MIN_MS_ENTRE_ENVIOS = 120; // anti-spam HTTP
 
 int peso_calibracion = 160;
 
@@ -138,27 +139,45 @@ void calibrarCelda(HX711& scale, int numeroCelda, int addr) {
   delay(2000);
 }
 
-float leerPesoGramos(HX711& scale, float factor) {
+float limitarGramos(float g) {
+  if (g < 0) return 0;
+  if (g > PESO_MAX_G) return PESO_MAX_G;
+  return g;
+}
+
+float leerPesoRapido(HX711& scale, float factor) {
   scale.set_scale(factor);
 
   float suma = 0;
   int validas = 0;
 
-  for (int i = 0; i < MUESTRAS; i++) {
-    if (scale.wait_ready_timeout(500)) {
-      float valor = scale.get_units(1);
-      suma += valor;
+  for (int i = 0; i < MUESTRAS_RAPIDAS; i++) {
+    if (scale.wait_ready_timeout(100)) {
+      suma += scale.get_units(1);
       validas++;
     }
-    delay(10);
+  }
+
+  if (validas < 1) return -1;
+  return limitarGramos(suma / validas);
+}
+
+float leerPesoEstable(HX711& scale, float factor) {
+  scale.set_scale(factor);
+
+  float suma = 0;
+  int validas = 0;
+
+  for (int i = 0; i < 6; i++) {
+    if (scale.wait_ready_timeout(200)) {
+      suma += scale.get_units(1);
+      validas++;
+    }
+    delay(8);
   }
 
   if (validas < 2) return -1;
-
-  float promedio = suma / validas;
-  if (promedio < 0) promedio = 0;
-  if (promedio > PESO_MAX_G) promedio = PESO_MAX_G;
-  return promedio;
+  return limitarGramos(suma / validas);
 }
 
 void conectarWiFi() {
@@ -199,6 +218,39 @@ void agregarFilaSupabase(JsonArray& arr, const char* categoria, float pesoGramos
   row["categoria"] = categoria;
   row["peso"] = gramosAKg(pesoGramos);
   row["usuario"] = "esp32";
+}
+
+bool enviarUnoASupabase(const char* categoria, float pesoGramos) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  StaticJsonDocument<256> doc;
+  doc["categoria"] = categoria;
+  doc["peso"] = gramosAKg(pesoGramos);
+  doc["usuario"] = "esp32";
+
+  String payload;
+  serializeJson(doc, payload);
+
+  HTTPClient http;
+  String url = String(supabaseUrl) + "/rest/v1/" + tableName;
+
+  http.begin(url);
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  http.addHeader("apikey", supabaseKey);
+  http.addHeader("Authorization", String("Bearer ") + supabaseKey);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Prefer", "return=minimal");
+
+  int code = http.POST(payload);
+  http.end();
+
+  if (code == 201 || code == 200) {
+    Serial.printf("[Supabase OK] %s %.0f g\n", categoria, pesoGramos);
+    return true;
+  }
+
+  Serial.printf("[Supabase ERROR] %s HTTP %d\n", categoria, code);
+  return false;
 }
 
 bool enviarLoteASupabase(float p1, float p2, float p3, bool ok1, bool ok2, bool ok3) {
@@ -246,28 +298,46 @@ void procesarEnvio(float p1, float p2, float p3) {
   bool ok1 = p1 >= 0;
   bool ok2 = p2 >= 0;
   bool ok3 = p3 >= 0;
+  bool huboCambio = false;
 
-  bool cambio = false;
-  if (ok1 && fabs(p1 - pesoRef1) >= UMBRAL_CAMBIO_G) cambio = true;
-  if (ok2 && fabs(p2 - pesoRef2) >= UMBRAL_CAMBIO_G) cambio = true;
-  if (ok3 && fabs(p3 - pesoRef3) >= UMBRAL_CAMBIO_G) cambio = true;
+  if (millis() - ultimoEnvioLote >= MIN_MS_ENTRE_ENVIOS) {
+    if (ok1 && fabs(p1 - pesoRef1) >= UMBRAL_CAMBIO_G) {
+      if (enviarUnoASupabase("vidrio", p1)) {
+        pesoRef1 = p1;
+        ultimoEnvioLote = millis();
+        huboCambio = true;
+      }
+    }
+    if (ok2 && fabs(p2 - pesoRef2) >= UMBRAL_CAMBIO_G) {
+      if (enviarUnoASupabase("plastico", p2)) {
+        pesoRef2 = p2;
+        ultimoEnvioLote = millis();
+        huboCambio = true;
+      }
+    }
+    if (ok3 && fabs(p3 - pesoRef3) >= UMBRAL_CAMBIO_G) {
+      if (enviarUnoASupabase("papel", p3)) {
+        pesoRef3 = p3;
+        ultimoEnvioLote = millis();
+        huboCambio = true;
+      }
+    }
+  }
 
-  bool heartbeat = (millis() - ultimoEnvioLote) >= INTERVALO_HEARTBEAT_MS;
-  if (!cambio && !heartbeat) return;
-  if (millis() - ultimoEnvioLote < INTERVALO_ENVIO_MS) return;
-
-  if (enviarLoteASupabase(p1, p2, p3, ok1, ok2, ok3)) {
-    ultimoEnvioLote = millis();
-    if (ok1) pesoRef1 = p1;
-    if (ok2) pesoRef2 = p2;
-    if (ok3) pesoRef3 = p3;
+  if (!huboCambio && (millis() - ultimoEnvioLote) >= INTERVALO_HEARTBEAT_MS) {
+    if (enviarLoteASupabase(p1, p2, p3, ok1, ok2, ok3)) {
+      ultimoEnvioLote = millis();
+      if (ok1) pesoRef1 = p1;
+      if (ok2) pesoRef2 = p2;
+      if (ok3) pesoRef3 = p3;
+    }
   }
 }
 
 void syncTodosLosTachos() {
-  float p1 = leerPesoGramos(scale1, scaleFactor1);
-  float p2 = leerPesoGramos(scale2, scaleFactor2);
-  float p3 = leerPesoGramos(scale3, scaleFactor3);
+  float p1 = leerPesoEstable(scale1, scaleFactor1);
+  float p2 = leerPesoEstable(scale2, scaleFactor2);
+  float p3 = leerPesoEstable(scale3, scaleFactor3);
 
   bool ok1 = p1 >= 0;
   bool ok2 = p2 >= 0;
@@ -325,9 +395,9 @@ void setup() {
   delay(500);
   conectarWiFi();
 
-  pesoPantalla1 = pesoRef1 = leerPesoGramos(scale1, scaleFactor1);
-  pesoPantalla2 = pesoRef2 = leerPesoGramos(scale2, scaleFactor2);
-  pesoPantalla3 = pesoRef3 = leerPesoGramos(scale3, scaleFactor3);
+  pesoPantalla1 = pesoRef1 = leerPesoEstable(scale1, scaleFactor1);
+  pesoPantalla2 = pesoRef2 = leerPesoEstable(scale2, scaleFactor2);
+  pesoPantalla3 = pesoRef3 = leerPesoEstable(scale3, scaleFactor3);
   if (pesoRef1 < 0) pesoRef1 = 0;
   if (pesoRef2 < 0) pesoRef2 = 0;
   if (pesoRef3 < 0) pesoRef3 = 0;
@@ -382,20 +452,35 @@ void loop() {
   }
 
   if (millis() - ultimaLectura >= INTERVALO_LECTURA_MS) {
-    float p1 = leerPesoGramos(scale1, scaleFactor1);
-    float p2 = leerPesoGramos(scale2, scaleFactor2);
-    float p3 = leerPesoGramos(scale3, scaleFactor3);
+    float p1 = leerPesoRapido(scale1, scaleFactor1);
+    float p2 = leerPesoRapido(scale2, scaleFactor2);
+    float p3 = leerPesoRapido(scale3, scaleFactor3);
 
-    if (p1 >= 0) pesoPantalla1 = p1;
-    if (p2 >= 0) pesoPantalla2 = p2;
-    if (p3 >= 0) pesoPantalla3 = p3;
+    bool refrescarLCD = false;
+
+    if (p1 >= 0) {
+      if (fabs(p1 - pesoPantalla1) >= 1.0f) refrescarLCD = true;
+      pesoPantalla1 = p1;
+    }
+    if (p2 >= 0) {
+      if (fabs(p2 - pesoPantalla2) >= 1.0f) refrescarLCD = true;
+      pesoPantalla2 = p2;
+    }
+    if (p3 >= 0) {
+      if (fabs(p3 - pesoPantalla3) >= 1.0f) refrescarLCD = true;
+      pesoPantalla3 = p3;
+    }
+
+    if (refrescarLCD) ultimaActualizacionLCD = 0;
+    mostrarLCD();
 
     procesarEnvio(p1, p2, p3);
 
     Serial.printf("V:%.0f P:%.0f Pa:%.0f g\n", pesoPantalla1, pesoPantalla2, pesoPantalla3);
     ultimaLectura = millis();
+  } else {
+    mostrarLCD();
   }
 
-  mostrarLCD();
-  delay(50);
+  delay(5);
 }

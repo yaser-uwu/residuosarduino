@@ -3,7 +3,7 @@ import { supabase, supabaseConfigError } from '../lib/supabase'
 import type { RegistroResiduo } from '../types'
 
 /** Polling continuo: la feria se actualiza aunque Realtime falle en el celular. */
-const INTERVALO_POLL_MS = 400
+const INTERVALO_POLL_MS = 250
 const LIMITE_REGISTROS = 40
 
 interface UseRegistrosResiduosResult {
