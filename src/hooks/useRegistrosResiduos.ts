@@ -8,6 +8,7 @@ const LIMITE_REGISTROS = 40
 
 interface UseRegistrosResiduosResult {
   registros: RegistroResiduo[]
+  totalRegistros: number
   loading: boolean
   error: string | null
   conectado: boolean
@@ -16,6 +17,7 @@ interface UseRegistrosResiduosResult {
 
 export function useRegistrosResiduos(): UseRegistrosResiduosResult {
   const [registros, setRegistros] = useState<RegistroResiduo[]>([])
+  const [totalRegistros, setTotalRegistros] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [conectado, setConectado] = useState(false)
@@ -42,21 +44,27 @@ export function useRegistrosResiduos(): UseRegistrosResiduosResult {
     }
 
     async function cargarRegistros(silencioso = false) {
-      const { data, error: fetchError } = await supabase
-        .from('registros_residuos')
-        .select('*')
-        .order('fecha_hora', { ascending: false })
-        .limit(LIMITE_REGISTROS)
+      const [lista, conteo] = await Promise.all([
+        supabase
+          .from('registros_residuos')
+          .select('*')
+          .order('fecha_hora', { ascending: false })
+          .limit(LIMITE_REGISTROS),
+        supabase
+          .from('registros_residuos')
+          .select('*', { count: 'exact', head: true }),
+      ])
 
       if (!activo) return
 
-      if (fetchError) {
-        setError(fetchError.message)
+      if (lista.error) {
+        setError(lista.error.message)
         setLoading(false)
         return
       }
 
-      aplicarRegistros(data ?? [])
+      aplicarRegistros(lista.data ?? [])
+      if (!conteo.error) setTotalRegistros(conteo.count ?? 0)
       if (!silencioso) setLoading(false)
     }
 
@@ -66,7 +74,7 @@ export function useRegistrosResiduos(): UseRegistrosResiduosResult {
         const siguiente = existe
           ? prev.map((r) => (r.id === registro.id ? registro : r))
           : [registro, ...prev]
-        return ordenarRegistros(siguiente)
+        return ordenarRegistros(siguiente).slice(0, LIMITE_REGISTROS)
       })
     }
 
@@ -90,11 +98,13 @@ export function useRegistrosResiduos(): UseRegistrosResiduosResult {
         (payload) => {
           if (payload.eventType === 'INSERT') {
             agregarOActualizar(payload.new as RegistroResiduo)
+            setTotalRegistros((n) => n + 1)
           } else if (payload.eventType === 'UPDATE') {
             agregarOActualizar(payload.new as RegistroResiduo)
           } else if (payload.eventType === 'DELETE') {
             const eliminado = payload.old as RegistroResiduo
             setRegistros((prev) => prev.filter((r) => r.id !== eliminado.id))
+            setTotalRegistros((n) => Math.max(0, n - 1))
           }
         },
       )
@@ -138,5 +148,5 @@ export function useRegistrosResiduos(): UseRegistrosResiduosResult {
     }
   }, [ordenarRegistros])
 
-  return { registros, loading, error, conectado, modoRealtime }
+  return { registros, totalRegistros, loading, error, conectado, modoRealtime }
 }

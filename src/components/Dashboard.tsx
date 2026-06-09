@@ -13,7 +13,7 @@ import type { CategoriaTacho } from '../types'
 
 export function Dashboard() {
   const configError = supabaseConfigError
-  const { registros, loading, error, conectado, modoRealtime } =
+  const { registros, totalRegistros, loading, error, conectado, modoRealtime } =
     useRegistrosResiduos()
   const errorMostrado = configError ?? error
 
@@ -114,7 +114,7 @@ export function Dashboard() {
 
             <StatsOverview
               totalKg={totalKg}
-              cantidadRegistros={registros.length}
+              cantidadRegistros={totalRegistros}
               porcentajesPorCategoria={porcentajesPorCategoria}
             />
 
